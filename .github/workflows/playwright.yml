@@ -30,7 +30,7 @@ jobs:
 
       # Debug: prove we see the right spec
       - name: Print voting.spec.ts (first 40 lines)
-        run: sed -n '1,40p' tests/voting.spec.ts || echo "spec not found"
+        run: sed -n '1,499p' tests/voting.spec.ts || echo "spec not found"
 
       # Run only the edited spec (later you can switch to all tests)
       - name: Run voting.spec.ts
