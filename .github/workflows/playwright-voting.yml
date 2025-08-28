@@ -1,38 +1,45 @@
-name: MTV Voting Automation
+name: Playwright Tests
 
 on:
-  workflow_dispatch: # manual trigger
-  schedule:
-    - cron: "0 8 * * *" # optional: run daily at 8AM UTC
+  workflow_dispatch: {}   # run manually
+  push:
+    branches: [ main ]    # run on pushes to main
 
 jobs:
-  vote:
+  test:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - name: Checkout repo (exact commit)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: 20
+          cache: npm
 
       - name: Install dependencies
-        run: |
-          npm install
-          npx playwright install --with-deps
+        run: npm ci
 
-      - name: Run Voting Script
-        run: |
-          npx playwright test tests/voting.spec.ts
-        env:
-          GOOGLE_SHEET_API_KEY: ${{ secrets.GOOGLE_SHEET_API_KEY }}
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
 
-      - name: Upload logs
+      # Debug: prove we see the right spec
+      - name: Print voting.spec.ts (first 40 lines)
+        run: sed -n '1,499p' tests/voting.spec.ts || echo "spec not found"
+
+      # Run only the edited spec (later you can switch to all tests)
+      - name: Run voting.spec.ts
+        run: npx playwright test tests/voting.spec.ts --reporter=line
+
+      - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: voting-logs
-          path: logs/
-
+          name: playwright-report
+          path: playwright-report
+          if-no-files-found: ignore
