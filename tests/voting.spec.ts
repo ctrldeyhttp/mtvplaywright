@@ -329,7 +329,7 @@ async function castVotesWithRecovery(
 
 test('MTV Voting Automation', async ({ page }) => {
 
-  test.setTimeout(3600000); 
+  test.setTimeout(25200000); 
 
   
 
