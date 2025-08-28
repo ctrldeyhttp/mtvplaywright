@@ -1,0 +1,44 @@
+# .github/workflows/playwright-voting.yml
+name: MTV Voting Automation
+
+on:
+  workflow_dispatch: # manual trigger
+  schedule:
+    - cron: "0 8 * * *" # optional: daily at 8AM UTC
+
+jobs:
+  vote:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1️⃣ Checkout repo
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # 2️⃣ Setup Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: "20"
+
+      # 3️⃣ Install dependencies
+      - name: Install dependencies
+        run: |
+          npm install
+          npx playwright install --with-deps
+
+      # 4️⃣ Run Playwright script
+      - name: Run Voting Script
+        run: npx playwright test tests/voting.spec.ts
+        env:
+          GOOGLE_SHEET_API_KEY: ${{ secrets.GOOGLE_SHEET_API_KEY }}
+          # add other environment variables as needed
+
+      # 5️⃣ Upload logs
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: voting-logs
+          path: logs/
+
