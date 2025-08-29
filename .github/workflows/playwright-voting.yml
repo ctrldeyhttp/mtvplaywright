@@ -8,8 +8,12 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-
+    env:
+      TZ: Asia/Manila   # 👈 make Node use Manila time
     steps:
+      - uses: actions/checkout@v4
+      # …rest of steps
+
       - name: Checkout repo (exact commit)
         uses: actions/checkout@v4
         with:
