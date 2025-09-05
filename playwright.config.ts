@@ -6,7 +6,7 @@ export default defineConfig({
     headless: true, // ⬅️ run all headless
   },
   projects: [
-    ...Array.from({ length: 2 }, (_, i) => ({
+    ...Array.from({ length: 1 }, (_, i) => ({
       name: `chromium-${i + 1}`,
       use: { ...devices['Desktop Chrome'] },
     }))
