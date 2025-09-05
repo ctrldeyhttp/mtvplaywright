@@ -338,7 +338,27 @@ test('MTV Voting Automation', async ({ page }) => {
   const categories = [
   {
     name: 'Video of the Year',
-    regexes: [/^Ariana Grand[eE]we can’t be friends \(wait for your love\)\d*Votes$/],
+    regexes: [/^ROSÉ & Bruno MarsAPT\.?\d*Votes$/],
+    scopedLabel: undefined
+  },
+  {
+    name: 'Song of the Year',
+    regexes: [/^ROSÉ & Bruno MarsAPT\.?\d*Votes$/],
+    scopedLabel: undefined
+  },
+  {
+    name: 'Best Collaboration',
+    regexes: [/^ROSÉ & Bruno MarsAPT\.?\d*Votes$/],
+    scopedLabel: /Best Collaboration/i
+  },
+  {
+    name: 'Best Pop',
+    regexes: [/^ROSÉ & Bruno MarsAPT\.?\d*Votes$/],
+    scopedLabel: /Best Pop/i
+  },
+  {
+    name: 'Best K-Pop',
+    regexes: [/^JENNIElike JENNIE\d*Votes$/],
     scopedLabel: undefined
   }
 ];
