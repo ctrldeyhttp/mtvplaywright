@@ -2,17 +2,8 @@ import { test, expect, Page } from '@playwright/test';
 import fs from 'fs';
 import path from 'path';
 import { getNextEmail, releaseEmail, markVotingResults, getRemainingEmailsCount, updateDailySummary } from "./supabaseHelper";
+const FIXED_VOTES = 20;
 
-// ⬇️ put this near the top of the file (after imports)
-function getPHHour(): number {
-  // Use Node’s built-in Intl to read Asia/Manila local hour
-  const hourStr = new Intl.DateTimeFormat('en-PH', {
-    hour: '2-digit',
-    hour12: false,
-    timeZone: 'Asia/Manila',
-  }).format(new Date());             // e.g. "01"
-  return parseInt(hourStr, 10);      // -> 1
-}
 
 async function detectQuotaForCategory(page: Page, categoryName: string): Promise<number | null> {
   const slug = categoryName.toLowerCase().replace(/\s+/g, '-');
@@ -163,7 +154,7 @@ async function ensureLoggedIn(page, email: string, row: number): Promise<boolean
 
 
 async function castVotesWithRecovery(
-  page,
+  page: Page,
   categoryName: string,
   candidateRegexes: RegExp[],
   maxVotes = 20,
@@ -174,45 +165,44 @@ async function castVotesWithRecovery(
 ) {
   console.log(`Casting votes for ${categoryName}...`);
 
-  let voteCount = 0;
-  let recoveryAttempts = 0;
   const submitRegex = /Submit/i;
+  const slug = categoryName.toLowerCase().replace(/\s+/g, '-');
 
   const categoryButton = page.getByRole('button', { name: categoryName });
-
-  const slug = categoryName.toLowerCase().replace(/\s+/g, '-');
   const categoryScope = scopedLabelRegex
     ? page.getByRole('region', { name: scopedLabelRegex })
     : page.locator(`#accordion-panel-${slug}`);
 
+  const bannerRe = new RegExp(`You have distributed all\\s+${maxVotes}\\s+votes`, 'i');
+  const banner = page.getByText(bannerRe);
 
-  console.log(
-    scopedLabelRegex
-      ? `Using scoped locator: ${scopedLabelRegex}`
-      : `Using global locator for ${categoryName}`
-  );
+  let recoveryAttempts = 0;
+  let clicksTried = 0;
+  const MAX_EXTRA_TRIES = maxVotes * 2; // safety cap (e.g., 40 total attempts)
 
-  for (let i = 0; i < maxVotes; i++) {
+  // If the panel isn’t open yet, try to open it
+  try {
+    await expect(categoryScope).toBeVisible({ timeout: 2000 });
+  } catch {
+    try {
+      await categoryButton.click();
+      await expect(categoryScope).toBeVisible({ timeout: 3000 });
+    } catch {
+      console.warn(`⚠️ Could not expand "${categoryName}" panel`);
+    }
+  }
 
-  // ✅ make sure still logged in
-    const stillLoggedIn = await ensureLoggedIn(page, email, row);
+  // ⏳ Keep clicking until the banner appears (or we exhaust attempts)
+  while (!(await banner.isVisible().catch(() => false)) && clicksTried < MAX_EXTRA_TRIES) {
+    // ✅ still logged in?
+    const stillLoggedIn = await ensureLoggedIn(page, email!, row!);
     if (!stillLoggedIn) {
       console.warn(`⚠️ Skipping ${categoryName}, account invalid: ${email}`);
       return;
     }
-    // --- early stop if submit prompt appears ---
-    const submitReady = await categoryScope
-      .getByRole('heading', { name: /You have distributed all/i })
-      .isVisible()
-      .catch(() => false);
 
-    if (submitReady) {
-      console.log(`Reached submit state early at vote #${i + 1}`);
-      break;
-    }
-
-    let clicked = false;
-
+    // 🔎 try each candidate regex this iteration
+    let clickedThisRound = false;
     for (const regex of candidateRegexes) {
       try {
         await categoryScope
@@ -220,54 +210,43 @@ async function castVotesWithRecovery(
           .filter({ hasText: regex })
           .getByLabel('Add Vote')
           .click({ timeout: 2000 });
-    
-        voteCount++;
-        console.log(`Vote #${voteCount} submitted for ${categoryName} (matched ${regex})`);
-        clicked = true;
-        recoveryAttempts = 0;
-        break;
+
+        clicksTried++;
+        clickedThisRound = true;
+        console.log(`Click ${clicksTried}: ${categoryName} (matched ${regex})`);
+
+        await expect(
+          categoryScope.getByText(/Votes?\s*remaining|Votes?\s*Submitted/i).first()
+        ).toBeVisible({ timeout: 500 });
+
+
+        // re-check banner immediately
+        if (await banner.isVisible().catch(() => false)) break;
       } catch {
-        // short wait + retry once
-        await page.waitForTimeout(1000);
-        try {
-          await categoryScope
-            .locator('div')
-            .filter({ hasText: regex })
-            .getByLabel('Add Vote')
-            .click({ timeout: 2000 });
-          voteCount++;
-          console.log(`Vote #${voteCount} submitted for ${categoryName} after retry (matched ${regex})`);
-          clicked = true;
-          recoveryAttempts = 0;
-          break;
-        } catch {
-          // still failed → try next regex
-        }
+        // try next regex
       }
     }
-    
 
-    if (!clicked) {
-      console.warn(`⚠️ Stuck on vote #${i + 1} for ${categoryName}`);
+    if (!clickedThisRound) {
+      console.warn(`⚠️ Couldn’t click any candidate this round for "${categoryName}"`);
 
-      // 1️⃣ Try submitting immediately (Scoped → Global → Close)
+      // Try quick submit-or-close (your existing pattern)
       const trySubmitOrClose = async () => {
         try {
-          await categoryScope.getByRole('button', { name: submitRegex }).click({ timeout: 1000 });
-          console.log(`Submitted ${categoryName} votes ✅ (stuck at #${i + 1}, scoped)`);
+          await categoryScope.getByRole('button', { name: submitRegex }).click({ timeout: 800 });
+          console.log(`Submitted ${categoryName} (fallback while stuck)`);
           return true;
         } catch {
           try {
-            await page.getByRole('button', { name: submitRegex }).last().click({ timeout: 1000 });
-            console.log(`Submitted ${categoryName} votes ✅ via global fallback (stuck at #${i + 1})`);
+            await page.getByRole('button', { name: submitRegex }).last().click({ timeout: 800 });
+            console.log(`Submitted ${categoryName} (global fallback while stuck)`);
             return true;
           } catch {
             try {
               await page.getByRole('button', { name: 'Close' }).click({ timeout: 700 });
-              console.log(`✅ Closed category "${categoryName}" after failed submit attempt`);
-              return true;
+              console.log(`Closed "${categoryName}" after failed submit attempt`);
+              return false;
             } catch {
-              console.log(`⚠️ No Submit or Close available for ${categoryName}`);
               return false;
             }
           }
@@ -276,78 +255,75 @@ async function castVotesWithRecovery(
 
       if (await trySubmitOrClose()) return;
 
-      // 2️⃣ Retry by re-clicking category
+      // Try re-expanding the category a few times
       if (recoveryAttempts < maxRecoveryAttempts) {
         try {
           await categoryButton.click();
           await page.waitForTimeout(1000);
           recoveryAttempts++;
-          console.log(
-            `🔄 Recovery attempt ${recoveryAttempts}/${maxRecoveryAttempts} for "${categoryName}"`
-          );
-          i--; // retry this same vote
-          continue;
+          console.log(`🔄 Recovery attempt ${recoveryAttempts}/${maxRecoveryAttempts} for "${categoryName}"`);
+          continue; // loop and try clicks again
         } catch {
-          console.warn(`Failed to click category "${categoryName}" during recovery`);
+          console.warn(`⚠️ Couldn’t re-click category "${categoryName}"`);
         }
       }
 
-      // 3️⃣ Skip category if nothing worked
-      console.warn(`❌ Skipping ${categoryName} after being stuck at vote #${i + 1}`);
+      // Give up if nothing worked
+      console.warn(`❌ Skipping ${categoryName}: can’t progress to banner`);
       return;
     }
   }
 
+  // ✅ At this point we either saw the banner or hit the cap
+  if (!(await banner.isVisible().catch(() => false))) {
+    console.warn(`⚠️ Never saw the "all ${maxVotes}" banner for ${categoryName} after ${clicksTried} attempts`);
+  } else {
+    console.log(`✅ UI confirms all ${maxVotes} votes distributed for ${categoryName}`);
+  }
+
   // === SUBMIT ===
-  if (voteCount > 0) {
-    let submitted = false;
+  let submitted = false;
+  const maxSubmitRetries = 3;
 
-    const maxSubmitRetries = 3;
-
-    for (let attempt = 1; attempt <= maxSubmitRetries; attempt++) {
+  for (let attempt = 1; attempt <= maxSubmitRetries; attempt++) {
+    try {
+      await categoryScope.getByRole('button', { name: submitRegex }).click({ timeout: 1000 });
+      submitted = true;
+      console.log(`Submitted ${categoryName} ✅ (attempt ${attempt})`);
+      break;
+    } catch {
       try {
-        // Try scoped first
-        await categoryScope.getByRole('button', { name: submitRegex }).click({ timeout: 2000 });
+        await page.getByRole('button', { name: submitRegex }).last().click({ timeout: 1000 });
         submitted = true;
-        console.log(`Submitted ${categoryName} votes ✅ (${voteCount}/${maxVotes}, scoped, attempt ${attempt})`);
+        console.log(`Submitted ${categoryName} ✅ via global fallback (attempt ${attempt})`);
         break;
       } catch {
-        try {
-          // Then try global fallback
-          await page.getByRole('button', { name: submitRegex }).last().click({ timeout: 2000 });
-          submitted = true;
-          console.log(`Submitted ${categoryName} votes ✅ via global fallback (${voteCount}/${maxVotes}, attempt ${attempt})`);
-          break;
-        } catch {
-          console.warn(`⚠️ Submit button not found for ${categoryName}, retry ${attempt}/${maxSubmitRetries}...`);
-          await page.waitForTimeout(1000); // wait a second before retry
-        }
+        console.warn(`⚠️ Submit not found for ${categoryName}, retry ${attempt}/${maxSubmitRetries}...`);
+        await page.waitForTimeout(1000);
       }
     }
-  
-    if (!submitted) {
-      throw new Error(`❌ Could not find Submit button for ${categoryName} after ${maxSubmitRetries} retries`);
-    }
+  }
 
-    // 🔁 Require confirmation banner with one retry
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        await expect(
-          page.getByRole('heading', { name: /You have distributed all/i })
-        ).toBeVisible({ timeout: 5000 });
-        console.log(`✅ Confirmation banner appeared for ${categoryName}`);
-        break;
-      } catch {
-        if (attempt === 1) {
-          console.warn(`⚠️ Banner not visible, retrying submit click for ${categoryName}`);
-          await page.getByRole('button', { name: submitRegex }).last().click({ timeout: 2000 }).catch(() => {});
-        } else {
-          throw new Error(`❌ Confirmation banner never appeared for ${categoryName}`);
-        }
+  if (!submitted) throw new Error(`❌ Could not find Submit for ${categoryName}`);
+
+  // Final confirmation (your existing banner check)
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      await expect(page.getByRole('heading', { name: /You have distributed all/i }))
+        .toBeVisible({ timeout: 5000 });
+      console.log(`✅ Confirmation banner appeared for ${categoryName} (post-submit)`);
+      break;
+    } catch {
+      if (attempt === 1) {
+        console.warn(`⚠️ Post-submit banner not visible, retrying submit click for ${categoryName}`);
+        await page.getByRole('button', { name: submitRegex }).last().click({ timeout: 2000 }).catch(() => {});
+      } else {
+        console.warn(`⚠️ Post-submit confirmation didn’t appear for ${categoryName}`);
       }
     }
   }
 }
+
     
 
 
@@ -362,30 +338,14 @@ test('MTV Voting Automation', async ({ page }) => {
   const categories = [
   {
     name: 'Video of the Year',
-    regexes: [/^ROSÉ & Bruno MarsAPT\.?\d*Votes$/],
-    scopedLabel: undefined
-  },
-  {
-    name: 'Song of the Year',
-    regexes: [/^ROSÉ & Bruno MarsAPT\.?\d*Votes$/],
-    scopedLabel: undefined
-  },
-  {
-    name: 'Best Collaboration',
-    regexes: [/^ROSÉ & Bruno MarsAPT\.?\d*Votes$/],
-    scopedLabel: /Best Collaboration/i
-  },
-  {
-    name: 'Best Pop',
-    regexes: [/^ROSÉ & Bruno MarsAPT\.?\d*Votes$/],
-    scopedLabel: /Best Pop/i
-  },
-  {
-    name: 'Best K-Pop',
-    regexes: [/^JENNIElike JENNIE\d*Votes$/],
+    regexes: [/^Ariana Grand[eE]we can’t be friends \(wait for your love\)\d*Votes$/],
     scopedLabel: undefined
   }
 ];
+
+
+console.log('Navigating to MTV Voting Page...');
+await page.goto('https://www.mtv.com/event/vma/vote/video-of-the-year');
 
 while (true) {
   // === Get next available email from Google Sheets ===
@@ -398,17 +358,14 @@ while (true) {
   
 
   console.log(`\n=== Starting voting session for: ${email} ===`);
-  const currentHour = getPHHour();
-  const votes = currentHour === 1 ? 20 : 10;
-  console.log(`⏱️ Current hour (PHT): ${currentHour}h → using ${votes} votes per category`);
+  const votes = FIXED_VOTES;
+  console.log(`⏱️ Forcing ${votes} votes per category (ignoring time)`);
 
 
   try {
 
     // --- LOGIN FLOW ---
     const start = Date.now(); // ⏱️ Start timer
-    console.log('Navigating to MTV Voting Page...');
-    await page.goto('https://www.mtv.com/event/vma/vote/video-of-the-year');
 
     if (!(await ensureLoggedIn(page, email, row))) continue;
 
@@ -452,8 +409,7 @@ while (true) {
       try {
         await page.getByRole('button', { name: category.name }).click({ timeout: 2000 }).catch(() => {});
 
-        const detected = await detectQuotaForCategory(page, category.name);
-        const effectiveVotes = detected ?? (getPHHour() === 1 ? 20 : 10);
+        const effectiveVotes = FIXED_VOTES;
 
 
         await castVotesWithRecovery(
@@ -513,7 +469,7 @@ async function forceReVote(page, category, votes: number) {
       page,
       category.name,
       category.regexes,
-      votes,                 // ⬅️ use the dynamic votes (10 or 20)
+      FIXED_VOTES,                 // ⬅️ use the dynamic votes (10 or 20)
       category.scopedLabel
     );
   } catch (err) {
