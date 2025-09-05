@@ -3,6 +3,32 @@ import fs from 'fs';
 import path from 'path';
 import { getNextEmail, releaseEmail, markVotingResults, getRemainingEmailsCount, updateDailySummary } from "./supabaseHelper";
 
+// ⬇️ put this near the top of the file (after imports)
+function getPHHour(): number {
+  // Use Node’s built-in Intl to read Asia/Manila local hour
+  const hourStr = new Intl.DateTimeFormat('en-PH', {
+    hour: '2-digit',
+    hour12: false,
+    timeZone: 'Asia/Manila',
+  }).format(new Date());             // e.g. "01"
+  return parseInt(hourStr, 10);      // -> 1
+}
+
+async function detectQuotaForCategory(page: Page, categoryName: string): Promise<number | null> {
+  const slug = categoryName.toLowerCase().replace(/\s+/g, '-');
+  // button text often contains "10/10 votes remaining" or "20/20 votes remaining"
+  let locator = page.locator(`#accordion-button-${slug}`);
+  if (!(await locator.count())) {
+    locator = page.getByRole('button', { name: categoryName });
+  }
+  try {
+    const text = (await locator.innerText()).trim();
+    const m = text.match(/\b(\d+)\s*\/\s*\1\s*votes?\s*remaining\b/i);
+    if (m) return parseInt(m[1], 10);
+  } catch {}
+  return null; // unknown
+}
+
 
 async function processCategory(page: Page, categoryName: string): Promise<boolean> {
   const categoryButton = page.getByRole('button', { name: categoryName });
@@ -329,7 +355,7 @@ async function castVotesWithRecovery(
 
 test('MTV Voting Automation', async ({ page }) => {
 
-  test.setTimeout(25200000); 
+  test.setTimeout(21600000); 
 
   
 
@@ -372,10 +398,9 @@ while (true) {
   
 
   console.log(`\n=== Starting voting session for: ${email} ===`);
-  const now = new Date();
-  const currentHour = now.getHours();
-  const votes = (currentHour === 1) ? 20 : 10;
-  console.log(`⏱️ Current hour: ${currentHour}h → using ${votes} votes per category`);
+  const currentHour = getPHHour();
+  const votes = currentHour === 1 ? 20 : 10;
+  console.log(`⏱️ Current hour (PHT): ${currentHour}h → using ${votes} votes per category`);
 
 
   try {
@@ -426,12 +451,20 @@ while (true) {
       if (!shouldVote) continue;
       try {
         await page.getByRole('button', { name: category.name }).click({ timeout: 2000 }).catch(() => {});
+
+        const detected = await detectQuotaForCategory(page, category.name);
+        const effectiveVotes = detected ?? (getPHHour() === 1 ? 20 : 10);
+
+
         await castVotesWithRecovery(
           page,
           category.name,
           category.regexes,
-          votes,
-          category.scopedLabel
+          effectiveVotes,
+          category.scopedLabel,
+          3,
+          email,   // <-- pass these so ensureLoggedIn() has values
+          row
         );
       } catch (err) {
         console.warn(`⚠️ Skipping category ${category.name} due to error: ${err.message}`);
